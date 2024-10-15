@@ -71,40 +71,11 @@ jobs:
           retention-days: 1
           name: build-artifacts-${{ github.run_id }}
 
-      - name: Deploy to Cloudflare Pages
-        if: github.ref == 'refs/heads/master' && github.repository == 'commaai/new-connect'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          apiToken: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
-          command: pages deploy dist --project-name=connect --branch=new-connect --commit-dirty=true
-
   preview:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 1
-    outputs:
-      pr: ${{ steps.pr.outputs.result }}
-      check_id: ${{ steps.check.outputs.result }}
     steps:
-      - name: Create PR check
-        uses: actions/github-script@v7
-        id: check
-        with:
-          script: |
-            const response = await github.rest.checks.create({
-              name: 'preview',
-              head_sha: '${{ github.event.pull_request.head.sha }}',
-              status: 'in_progress',
-              output: {
-                title: 'Preview deployment',
-                summary: 'In Progress',
-              },
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            })
-            return response.data.id
-
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v1
 
@@ -114,16 +85,12 @@ jobs:
           name: build-artifacts-${{ github.run_id }}
           path: ./dist
 
-      - name: Find PR number
-        id: pr
-        run: echo "result=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           apiToken: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
-          command: pages deploy dist --project-name=connect --branch=${{ steps.pr.outputs.result }} --commit-dirty=true
+          command: pages deploy dist --project-name=connect --branch=${{ github.ref_name }} --commit-dirty=true
 
       - name: Checkout ci-artifacts
         uses: actions/checkout@v4
@@ -133,78 +100,27 @@ jobs:
           path: ${{ github.workspace }}/ci-artifacts
           ref: master
 
-      - name: take screenshots
-        run: node src/ci/screenshots.cjs https://${{ steps.pr.outputs.result }}.connect-d5y.pages.dev ${{ github.workspace }}/ci-artifacts
+      - name: Take screenshots
+        run: node src/ci/screenshots.cjs https://${{ github.ref_name }}.connect-d5y.pages.dev ${{ github.workspace }}/ci-artifacts
 
       - name: Push Screenshots
         working-directory: ${{ github.workspace }}/ci-artifacts
         run: |
-          git checkout -b new-connect/pr-${{ steps.pr.outputs.result }}
+          git checkout -b new-connect/${{ github.ref_name }}
           git config user.name "GitHub Actions Bot"
           git config user.email "<>"
           git add .
-          git commit -m "screenshots for PR #${{ steps.pr.outputs.result }}"
-          git push origin new-connect/pr-${{ steps.pr.outputs.result }} --force
+          git commit -m "screenshots for ${{ github.ref_name }}"
+          git push origin new-connect/${{ github.ref_name }} --force
 
-      - name: Comment URL on PR
-        uses: thollander/actions-comment-pull-request@v2
+      - name: Comment URL (PR only)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
         with:
-          message: |
-            <!-- _(run_id **${{ github.run_id }}**)_ -->
-
-            # deployed preview: https://${{ steps.pr.outputs.result }}.connect-d5y.pages.dev
-
-            Welcome to new-connect! Make sure to:
-            * read the [contributing guidelines](https://github.com/commaai/new-connect?tab=readme-ov-file#contributing)
-            * mark your PR as a draft until it's ready to review
-            * post the preview on [Discord](https://discord.comma.ai); feedback from users will speedup the PR review
-
-            ### Mobile
-            <table>
-              <tr>
-                <td><img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/Login-mobile.playwright.png"></td>
-                <td><img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/RouteActivity-mobile.playwright.png"></td>
-              <tr/>
-              <tr>
-                <td><img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/RouteList-mobile.playwright.png"></td>
-                <td><img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/SettingsActivity-mobile.playwright.png"></td>
-              </tr>
-            </table>
-
-            ### Desktop
-            <table>
-              <tr>
-                <img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/Login-desktop.playwright.png">
-                <img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/RouteActivity-desktop.playwright.png">
-              </tr>
-              <tr>
-                <img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/RouteList-desktop.playwright.png">
-                <img src="https://raw.githubusercontent.com/commaai/ci-artifacts/new-connect/pr-${{ steps.pr.outputs.result }}/SettingsActivity-desktop.playwright.png">
-              </tr>
-            </table>
-          comment_tag: run_id
-          pr_number: ${{ steps.pr.outputs.result }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  update_pr_check:
-    needs: [build, preview]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-    - name: Update PR check
-      uses: actions/github-script@v7
-      with:
-        script: |
-          github.rest.checks.update({
-            check_run_id: ${{ needs.preview.outputs.check_id }},
-            name: 'preview',
-            head_sha: '${{ github.event.pull_request.head.sha }}',
-            status: 'completed',
-            conclusion: '${{ needs.preview.result }}',
-            output: {
-              title: 'Preview deployment',
-              summary: 'Result: ${{ needs.preview.result }}',
-            },
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-          })
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `Deployed preview: https://${{ github.ref_name }}.connect-d5y.pages.dev`
+            })
